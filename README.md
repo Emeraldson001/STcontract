@@ -333,7 +333,9 @@ Both transfers are atomic — if either fails, the whole transaction reverts. Th
 
 The platform fee percentage can be:
 - **Global default** (set at `init`, updatable by admin)
-- **Per-course override** (set by instructor at registration time, non-zero value)
+- **Per-course override** (set by instructor at registration time)
+
+**Zero per-course fee semantics:** a `platform_fee_pct` of `0` passed to `register_course` is **not** an explicit "free" override — it means *inherit the global default fee*. Only a non-zero per-course value is treated as an explicit per-course fee. To make a course genuinely free, set `price = 0` (the enrollment then splits a zero amount); do not rely on a `0` fee override. This rule is locked by the registration and enrollment regression tests (`test_register_course_custom_fee` and the zero-fee enrollment tests).
 
 ---
 
@@ -349,7 +351,13 @@ stellar contract invoke \
   --certificate_id "CERT-12345-TAILORING"
 ```
 
-Returns `true` if the certificate exists and has not been revoked. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
+Returns `true` if the certificate exists, has not been revoked, and has not expired. The `get_certificate()` function returns the full record including the student's Stellar address, course title, instructor, and issuance ledger — all permanently recorded and independently auditable.
+
+**Expiry rule:** a certificate with `expires_at_ledger = Some(n)` is valid while the current ledger is strictly less than `n` (`ledger < n`) and is expired at and after `n` (`ledger >= n`). `verify_certificate` returns `false` for an expired certificate. A certificate with `expires_at_ledger = None` never expires. The boundary is covered by the certificate-expiration regression tests.
+
+**Issuance signature rule:** `issue_certificate` requires an `instructor_signature` that matches the course instructor. A missing or mismatched signature is rejected and no certificate record or `certificate_issued` event is created.
+
+**Revocation challenge-period boundary:** after `revoke_certificate`, a student may challenge the revocation while the current ledger is strictly less than the configured `revocation_deadline` (`ledger < revocation_deadline`). At and after the deadline (`ledger >= revocation_deadline`) the revocation is permanent and finalization succeeds. The boundary is covered by the revocation challenge-period regression tests.
 
 ---
 
@@ -448,6 +456,8 @@ cargo test
 cargo test -- --nocapture          # with output
 cargo test test_full_lifecycle     # single test
 ```
+
+Validation command: `cargo test` — expected result: all tests pass (`test result: ok`).
 
 Expected:
 ```

@@ -251,6 +251,70 @@ proptest! {
         );
     }
 
+    /// A zero per-course fee override means "inherit the global default",
+    /// not "free": for any price and default rate, a course registered with
+    /// `Some(0)` must charge exactly the same split as one registered with
+    /// `None`, and that split must still conserve value.
+    #[test]
+    fn prop_zero_fee_override_inherits_default(
+        price in course_price(),
+        token_fee in fee_bps(),
+    ) {
+        let e_none = enroll_with(price, token_fee, 0);
+        let client_none = SorobanLardContractClient::new(&e_none.env, &e_none.contract_id);
+        let enrollment_none = client_none
+            .get_enrollment(&e_none.student, &e_none.student, &e_none.course_id)
+            .unwrap();
+
+        // Register a second course with an explicit zero override and the
+        // same default fee configuration.
+        let (env, contract_id, token_id, admin, _sec_admin, treasury, instructor) = setup();
+        let client = SorobanLardContractClient::new(&env, &contract_id);
+        client.set_fee_config(&admin, &token_id, &token_fee);
+
+        let course_id = String::from_str(&env, "PROP-ZERO-OVERRIDE");
+        client.register_course(
+            &instructor,
+            &course_id,
+            &price,
+            &token_id,
+            &0u32,
+            &Some(0u32),
+            &BytesN::from_array(&env, &[2u8; 32]),
+            &soroban_sdk::Vec::new(&env),
+        );
+        env.ledger().with_mut(|l| {
+            l.sequence_number += 1;
+        });
+        client.approve_course(&admin, &course_id);
+
+        let student = Address::generate(&env);
+        if price > 0 {
+            token::StellarAssetClient::new(&env, &token_id).mint(&student, &price);
+        }
+        client.enroll(&student, &course_id);
+
+        let enrollment_zero = client
+            .get_enrollment(&student, &student, &course_id)
+            .unwrap();
+
+        prop_assert_eq!(enrollment_zero.amount_paid, price);
+        prop_assert_eq!(enrollment_zero.platform_amount, enrollment_none.platform_amount);
+        prop_assert_eq!(enrollment_zero.instructor_amount, enrollment_none.instructor_amount);
+        prop_assert_eq!(
+            enrollment_zero.platform_amount + enrollment_zero.instructor_amount,
+            price
+        );
+        prop_assert_eq!(
+            token::Client::new(&env, &token_id).balance(&treasury),
+            enrollment_zero.platform_amount
+        );
+        prop_assert_eq!(
+            client.get_instructor_earnings(&instructor, &token_id),
+            enrollment_zero.instructor_amount
+        );
+    }
+
     /// An approved refund returns exactly what was paid: the student is made
     /// whole, the treasury and contract return to zero, and no instructor
     /// earnings remain.
